@@ -34,7 +34,12 @@ public class UE5DroneControl : ModuleRules
 			"UE5DroneControl/Variant_TwinStick",
 			"UE5DroneControl/Variant_TwinStick/AI",
 			"UE5DroneControl/Variant_TwinStick/Gameplay",
-			"UE5DroneControl/Variant_TwinStick/UI"
+			"UE5DroneControl/Variant_TwinStick/UI",
+			"UE5DroneControl/DroneOps",
+			"UE5DroneControl/DroneOps/Core",
+			"UE5DroneControl/DroneOps/Control",
+			"UE5DroneControl/DroneOps/Drone",
+			"UE5DroneControl/DroneOps/Interfaces"
 		});
 
 		// Uncomment if you are using Slate UI

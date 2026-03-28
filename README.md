@@ -191,11 +191,16 @@ struct FDroneSocketData {
 };
 ```
 
-**坐标假设**: UE5坐标系中 X=前, Y=右, Z=上 → NED坐标系转换公式:
+**重要说明**:
+- UE5发送的是**UE5世界坐标系**中的坐标（单位：厘米）
+- Python桥接端（`ue_to_px4_bridge.py`）负责将UE5坐标转换为NED坐标
+- 转换公式见下方"坐标系转换"章节
+
+**坐标系说明**: UE5坐标系中 X=前, Y=右, Z=上 → Python端转换为NED坐标系:
 ```
 NED_X = X × 0.01   (前 → 北)
 NED_Y = Y × 0.01   (右 → 东)
-NED_Z = -Z × 0.01  (上 → 下)
+NED_Z = -Z × 0.01  (上 → 下，取负)
 ```
 
 **端口配置**:
@@ -206,20 +211,25 @@ NED_Z = -Z × 0.01  (上 → 下)
 
 ```c
 struct MultiDroneData {
-    double timestamp;    // 8字节
-    float x;            // 4字节 (UE5 X, cm)
-    float y;            // 4字节
-    float z;            // 4字节
-    uint32 mode;        // 4字节
-    uint32 drone_mask;  // 4字节 - 位掩码选择无人机
-    uint32 sequence;    // 4字节 - 序列号
+    double timestamp;    // 8字节, Unix时间戳 (秒)
+    float x;            // 4字节, UE5 X坐标 (厘米)
+    float y;            // 4字节, UE5 Y坐标 (厘米)
+    float z;            // 4字节, UE5 Z坐标 (厘米)
+    uint32 mode;        // 4字节, 0=悬停, 1=移动
+    uint32 drone_mask;  // 4字节, 位掩码选择无人机
+    uint32 sequence;    // 4字节, 序列号
 };
 ```
 
+**重要说明**:
+- UE5发送的是**UE5世界坐标系**中的坐标（单位：厘米）
+- 主控制器（`multi_ue_controller.py`）负责解析掩码并分发
+- 各桥接器（`ue_to_px4_bridge.py`）负责将UE5坐标转换为NED坐标
+
 **位掩码编码**:
-- 位0 (0x01): 选择 px4_1 (ID=1)
-- 位1 (0x02): 选择 px4_2 (ID=2)
-- 位2 (0x04): 选择 px4_3 (ID=3)
+- 位0 (0x01): 选择 px4_1 (drone_id=1, mavlink_system_id=2)
+- 位1 (0x02): 选择 px4_2 (drone_id=2, mavlink_system_id=3)
+- 位2 (0x04): 选择 px4_3 (drone_id=3, mavlink_system_id=4)
 
 **向后兼容**: 24字节单机数据包也支持，自动解释为 `drone_mask = 0x07` (全选)。
 
@@ -239,8 +249,25 @@ struct MultiDroneData {
 
 ### 5.2 GPS 到局部坐标转换 (全局统一)
 
-为了确保所有飞机参考同一坐标系（地图中心），我们引入GPS全局位置：
+为了确保所有飞机参考同一坐标系（地图中心），系统使用GPS全局位置进行坐标对齐：
 
+**坐标转换流程**:
+```
+1. 用户配置地图中心GPS坐标 (lat0, lon0, alt0)
+   ↓
+2. 无人机实时GPS (lat, lon, alt) → ENU局部坐标 (东-北-上)
+   ↓
+3. ENU → NED坐标 (北-东-下)
+   ↓
+4. 应用于PX4 odometry位置
+```
+
+**关键说明**:
+- **UE5端**: 发送UE5世界坐标（厘米），世界原点(0,0,0)对应地图中心GPS坐标
+- **Python端**: 接收UE5坐标后，转换为NED坐标（米），再发送给PX4
+- **地图中心**: 必须在UE5和Python端保持一致，否则坐标会错位
+
+**Python端转换代码**:
 ```python
 # 用户在初始化时提供地图中心GPS坐标
 map_center = (lat0, lon0, alt0)  # 例如: (39.90872, 116.39748, 50.0)
@@ -264,6 +291,11 @@ n = (lat - lat0) × 111319
 e = (lon - lon0) × 111319 × cos(lat0_rad)
 u = alt - alt0
 ```
+
+**配置要求**:
+- 地图中心必须在 `multi_drone_config.yaml` 中配置
+- 启动 `ue_to_px4_bridge.py` 时会自动读取地图中心
+- UE5端应通过 `DA_MapRuntimeConfig` 配置相同的地图中心（规划中）
 
 ---
 
@@ -403,9 +435,12 @@ python ue_to_px4_bridge.py \
   --map-center-lon 116.39748
 ```
 **参数说明**:
-- `--drone-id`: MAVLink system ID (对应px4_1=2)
+- `--drone-id`: MAVLink system ID (对应px4_1=2, px4_2=3, px4_3=4)
 - `--topic-prefix`: ROS2话题前缀
-- `--map-center-lat/lon`: 地图中心GPS坐标 (用于全局坐标统一)
+- `--udp-port`: 监听的UDP端口（8889/8891/8893）
+- `--map-center-lat/lon`: 地图中心GPS坐标（用于全局坐标统一）
+
+**重要**: 地图中心坐标必须与 `multi_drone_config.yaml` 中的配置一致
 
 #### 步骤5: 交互控制
 1. UE5中，使用鼠标左键点击地面，控制 `BP_TopDownCharacter` 移动到目标点
@@ -426,18 +461,44 @@ python ue_to_px4_bridge.py \
 ### 8.2 多机模式完整流程
 
 #### 前置: 配置各无人机
-编辑 `multi_drone_config.yaml`，确认各机IP地址正确:
+编辑 `multi_drone_config.yaml`，确认各机配置正确:
 ```yaml
+# 地图中心配置
+map_center:
+  latitude: 39.90872
+  longitude: 116.39748
+  altitude: 50.0
+
+controller:
+  listen_port: 8899
+
 drones:
   - name: "UAV1"
+    drone_id: 1
     mavlink_system_id: 2
+    bit_index: 0
     ssh_host: "192.168.30.104"
+    topic_prefix: "/px4_1"
+    ue_receive_port: 8888
+    control_port: 8889
+
   - name: "UAV2"
+    drone_id: 2
     mavlink_system_id: 3
+    bit_index: 1
     ssh_host: "192.168.30.102"
+    topic_prefix: "/px4_2"
+    ue_receive_port: 8890
+    control_port: 8891
+
   - name: "UAV3"
+    drone_id: 3
     mavlink_system_id: 4
+    bit_index: 2
     ssh_host: "192.168.30.103"
+    topic_prefix: "/px4_3"
+    ue_receive_port: 8892
+    control_port: 8893
 ```
 
 #### 步骤1: 启动所有数据桥接 (每个无人机1个)
@@ -459,14 +520,33 @@ python drone_data_bridge.py --ue-port 8892 --ssh-host 192.168.30.103 --ros-topic
 在3个不同的Linux/Jetson终端中:
 ```bash
 # 终端A: px4_1 控制
-python ue_to_px4_bridge.py --drone-id 2 --topic-prefix /px4_1
+python ue_to_px4_bridge.py \
+  --drone-id 2 \
+  --topic-prefix /px4_1 \
+  --udp-port 8889 \
+  --map-center-lat 39.90872 \
+  --map-center-lon 116.39748
 
 # 终端B: px4_2 控制
-python ue_to_px4_bridge.py --drone-id 3 --topic-prefix /px4_2
+python ue_to_px4_bridge.py \
+  --drone-id 3 \
+  --topic-prefix /px4_2 \
+  --udp-port 8891 \
+  --map-center-lat 39.90872 \
+  --map-center-lon 116.39748
 
 # 终端C: px4_3 控制
-python ue_to_px4_bridge.py --drone-id 4 --topic-prefix /px4_3
+python ue_to_px4_bridge.py \
+  --drone-id 4 \
+  --topic-prefix /px4_3 \
+  --udp-port 8893 \
+  --map-center-lat 39.90872 \
+  --map-center-lon 116.39748
 ```
+
+**重要**:
+- 地图中心坐标必须与 `multi_drone_config.yaml` 中的配置一致
+- 也可以让脚本自动从配置文件读取地图中心（需修改脚本）
 
 #### 步骤3: 启动多机主控制器
 ```bash
@@ -487,11 +567,17 @@ python multi_ue_controller.py --config multi_controller_config.yaml
 
 **示例BluePrint逻辑**:
 ```
-On Key 1 Pressed → SetCurrentMask(0x01)
-On Key 2 Pressed → SetCurrentMask(0x02)
-On Key 3 Pressed → SetCurrentMask(0x04)
+On Key 1 Pressed → SetCurrentMask(0x01)  // 选择UAV1 (bit_index=0)
+On Key 2 Pressed → SetCurrentMask(0x02)  // 选择UAV2 (bit_index=1)
+On Key 3 Pressed → SetCurrentMask(0x04)  // 选择UAV3 (bit_index=2)
 On Mouse Click → SendMultiDroneData(x,y,z, mode=1, mask=CurrentMask)
 ```
+
+**位掩码与bit_index对应关系**:
+- bit_index=0 → drone_mask=0x01 (二进制: 0001)
+- bit_index=1 → drone_mask=0x02 (二进制: 0010)
+- bit_index=2 → drone_mask=0x04 (二进制: 0100)
+- 多选: drone_mask=0x03 (二进制: 0011) 同时选择UAV1和UAV2
 
 ---
 
@@ -1049,31 +1135,62 @@ PX4 真实无人机 (px4_1, px4_2, px4_3)
 #### multi_drone_config.yaml（多机配置）
 
 ```yaml
+# 地图中心配置（必须与UE5保持一致）
+map_center:
+  latitude: 39.90872    # 地图中心纬度（度）
+  longitude: 116.39748  # 地图中心经度（度）
+  altitude: 50.0        # 地图中心海拔（米）
+
+# 统一控制端口
+controller:
+  listen_port: 8899           # UE5统一发送到此端口
+  safety_limits:
+    max_altitude: 100.0
+    max_horizontal_distance: 500.0
+
+# 无人机配置列表
 drones:
-  - name: "UAV1"
-    drone_id: 1
-    topic_prefix: "/px4_1"
-    ue_receive_port: 8888
-    control_port: 8889
+  - name: "UAV1"              # 显示名称
+    drone_id: 1               # 内部整数ID
+    mavlink_system_id: 2      # MAVLink系统ID（注意：不等于drone_id）
+    bit_index: 0              # 位掩码索引（0=bit0, 1=bit1, 2=bit2）
+    topic_prefix: "/px4_1"    # ROS2话题前缀
+    ue_receive_port: 8888     # UE5接收遥测数据的端口
+    control_port: 8889        # 桥接器接收控制命令的端口
 
   - name: "UAV2"
     drone_id: 2
+    mavlink_system_id: 3
+    bit_index: 1
     topic_prefix: "/px4_2"
     ue_receive_port: 8890
     control_port: 8891
 
   - name: "UAV3"
     drone_id: 3
+    mavlink_system_id: 4
+    bit_index: 2
     topic_prefix: "/px4_3"
     ue_receive_port: 8892
     control_port: 8893
-
-controller:
-  listen_port: 8899
-  safety_limits:
-    max_altitude: 100.0
-    max_horizontal_distance: 500.0
 ```
+
+**字段说明**:
+- `name`: 无人机显示名称，用于UI显示
+- `drone_id`: 内部整数ID（1/2/3），用于程序逻辑
+- `mavlink_system_id`: MAVLink系统ID（2/3/4），对应PX4配置
+- `bit_index`: 位掩码索引（0/1/2），用于多机选择掩码
+  - bit_index=0 → drone_mask的bit 0 (0x01)
+  - bit_index=1 → drone_mask的bit 1 (0x02)
+  - bit_index=2 → drone_mask的bit 2 (0x04)
+- `topic_prefix`: ROS2话题前缀，必须与PX4配置一致
+- `ue_receive_port`: UE5接收该无人机遥测数据的端口
+- `control_port`: 该无人机的桥接器监听的控制端口
+
+**地图中心配置**:
+- `map_center`: 定义坐标系统的原点GPS坐标
+- 所有无人机的位置都相对于此地图中心计算
+- **必须与UE5端配置保持一致**（通过`DA_MapRuntimeConfig`或`EUW_MapCenterConfigurator`配置）
 
 ### 10.4 数据协议
 

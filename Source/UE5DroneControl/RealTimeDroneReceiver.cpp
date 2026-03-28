@@ -1,4 +1,8 @@
 ﻿#include "RealTimeDroneReceiver.h"
+#include "DroneOps/Drone/DroneTelemetryComponent.h"
+#include "DroneOps/Core/DroneRegistrySubsystem.h"
+#include "DroneOps/Core/DroneOpsTypes.h"
+#include "Engine/GameInstance.h"
 
 // --- 引入必要的底层头文件 ---
 #include "SocketSubsystem.h"
@@ -14,8 +18,9 @@ ARealTimeDroneReceiver::ARealTimeDroneReceiver()
 	TargetLocation = FVector::ZeroVector;
 	TargetRotation = FRotator::ZeroRotator;
 	ListenSocket = nullptr;
-	// 作为接收端，默认不发送 UDP
 	bEnableUDPSend = false;
+
+	TelemetryComponent = CreateDefaultSubobject<UDroneTelemetryComponent>(TEXT("TelemetryComponent"));
 
 	// === 【关键】禁用重力和物理模拟 ===
 	if (UCharacterMovementComponent* Movement = GetCharacterMovement())
@@ -71,6 +76,37 @@ void ARealTimeDroneReceiver::BeginPlay()
 
 	// === 1. 绑定到固定端口 ===
 	CreateAndBindSocket(ListenPort);
+
+	// === 2. Register with DroneRegistrySubsystem ===
+	if (UGameInstance* GI = GetGameInstance())
+	{
+		if (UDroneRegistrySubsystem* Registry = GI->GetSubsystem<UDroneRegistrySubsystem>())
+		{
+			// Only register descriptor if not already registered by MultiDroneManager
+			if (!Registry->IsDroneRegistered(DroneId))
+			{
+				FDroneDescriptor Desc;
+				Desc.Name            = DroneName;
+				Desc.DroneId         = DroneId;
+				Desc.MavlinkSystemId = MavlinkSystemId;
+				Desc.BitIndex        = BitIndex;
+				Desc.ThemeColor      = ThemeColor;
+				Desc.UEReceivePort   = ListenPort;
+				Registry->RegisterDrone(Desc);
+			}
+			Registry->RegisterReceiverActor(DroneId, this);
+			UE_LOG(LogTemp, Log, TEXT("RealTimeDroneReceiver: Registered receiver for %s (ID=%d)"), *DroneName, DroneId);
+		}
+	}
+
+	// Sync TelemetryComponent DroneId
+	if (TelemetryComponent)
+	{
+		FDroneTelemetrySnapshot InitSnap;
+		InitSnap.DroneId = DroneId;
+		InitSnap.Availability = EDroneAvailability::Offline;
+		TelemetryComponent->PushSnapshot(InitSnap);
+	}
 }
 
 void ARealTimeDroneReceiver::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -592,6 +628,9 @@ void ARealTimeDroneReceiver::ProcessPacket(const TArray<uint8>& Data)
 	TargetLocation = NewTarget;
 	TargetRotation = NewRotation;
 
+	// Push telemetry to component (propagates to DroneRegistrySubsystem)
+	PushTelemetry(DroneData, NewTarget, NewRotation);
+
 	// 【优化】屏幕调试信息 - 显示坐标位置和偏转角
 	#if !UE_BUILD_SHIPPING
 	if (GEngine && PacketCounter % 10 == 0)
@@ -654,4 +693,24 @@ void ARealTimeDroneReceiver::AutoDetectPort()
 	}
 
 	UE_LOG(LogTemp, Warning, TEXT(">>> [AutoDetect] 开始扫描端口 %d, 等待数据..."), CurrentDetectedPort);
+}
+
+void ARealTimeDroneReceiver::PushTelemetry(const FDroneYAMLData& DroneData, const FVector& WorldPos, const FRotator& WorldRot)
+{
+	if (!TelemetryComponent)
+	{
+		return;
+	}
+
+	FDroneTelemetrySnapshot Snap;
+	Snap.DroneId         = DroneId;
+	Snap.Availability    = EDroneAvailability::Online;
+	Snap.WorldLocation   = WorldPos;
+	Snap.NedLocation     = DroneData.Position; // absolute NED [m]
+	Snap.Velocity        = DroneData.Velocity;
+	Snap.Attitude        = WorldRot;
+	Snap.Altitude        = -DroneData.Position.Z; // NED down is negative altitude
+	Snap.LastUpdateTime  = FPlatformTime::Seconds();
+
+	TelemetryComponent->PushSnapshot(Snap);
 }

@@ -1,0 +1,282 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "DroneOpsTypes.generated.h"
+
+/**
+ * Camera mode for drone operations
+ */
+UENUM(BlueprintType)
+enum class EDroneCameraMode : uint8
+{
+	Follow UMETA(DisplayName = "Follow Drone"),
+	Free UMETA(DisplayName = "Free Camera")
+};
+
+/**
+ * Drone availability status
+ */
+UENUM(BlueprintType)
+enum class EDroneAvailability : uint8
+{
+	Online UMETA(DisplayName = "Online"),
+	Offline UMETA(DisplayName = "Offline"),
+	Lost UMETA(DisplayName = "Lost Connection")
+};
+
+/**
+ * Reason why drone control is locked
+ */
+UENUM(BlueprintType)
+enum class EDroneControlLockReason : uint8
+{
+	None UMETA(DisplayName = "Not Locked"),
+	FormationPlayback UMETA(DisplayName = "Formation Playback"),
+	Offline UMETA(DisplayName = "Drone Offline"),
+	InvalidTarget UMETA(DisplayName = "Invalid Target")
+};
+
+/**
+ * Drone descriptor - static identity information
+ */
+USTRUCT(BlueprintType)
+struct FDroneDescriptor
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Drone")
+	FString Name = TEXT("UAV");
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Drone")
+	int32 DroneId = 0;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Drone")
+	int32 MavlinkSystemId = 0;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Drone")
+	int32 BitIndex = 0;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Drone")
+	FLinearColor ThemeColor = FLinearColor::White;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Drone")
+	int32 UEReceivePort = 8888;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Drone")
+	FString TopicPrefix = TEXT("/px4_1");
+
+	FDroneDescriptor() = default;
+};
+
+/**
+ * Drone telemetry snapshot - runtime state
+ */
+USTRUCT(BlueprintType)
+struct FDroneTelemetrySnapshot
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Telemetry")
+	int32 DroneId = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Telemetry")
+	EDroneAvailability Availability = EDroneAvailability::Offline;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Telemetry")
+	FVector WorldLocation = FVector::ZeroVector;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Telemetry")
+	FVector NedLocation = FVector::ZeroVector;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Telemetry")
+	FVector GeographicLocation = FVector::ZeroVector; // Lat, Lon, Alt
+
+	UPROPERTY(BlueprintReadOnly, Category = "Telemetry")
+	FVector Velocity = FVector::ZeroVector;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Telemetry")
+	FRotator Attitude = FRotator::ZeroRotator;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Telemetry")
+	float Altitude = 0.0f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Telemetry")
+	double LastUpdateTime = 0.0;
+
+	FDroneTelemetrySnapshot() = default;
+};
+
+/**
+ * Drone target command
+ */
+USTRUCT(BlueprintType)
+struct FDroneTargetCommand
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadWrite, Category = "Command")
+	int32 DroneId = 0;
+
+	UPROPERTY(BlueprintReadWrite, Category = "Command")
+	FVector TargetWorldLocation = FVector::ZeroVector;
+
+	UPROPERTY(BlueprintReadWrite, Category = "Command")
+	FVector TargetNedLocation = FVector::ZeroVector;
+
+	UPROPERTY(BlueprintReadWrite, Category = "Command")
+	FVector TargetGeographicLocation = FVector::ZeroVector; // Optional
+
+	UPROPERTY(BlueprintReadWrite, Category = "Command")
+	int32 Mode = 0;
+
+	UPROPERTY(BlueprintReadWrite, Category = "Command")
+	double IssuedAt = 0.0;
+
+	FDroneTargetCommand() = default;
+};
+
+/**
+ * Multi-drone control packet (32 bytes UDP structure)
+ */
+USTRUCT(BlueprintType)
+struct FMultiDroneControlPacket
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadWrite, Category = "Control")
+	double Timestamp = 0.0;
+
+	UPROPERTY(BlueprintReadWrite, Category = "Control")
+	float X = 0.0f;
+
+	UPROPERTY(BlueprintReadWrite, Category = "Control")
+	float Y = 0.0f;
+
+	UPROPERTY(BlueprintReadWrite, Category = "Control")
+	float Z = 0.0f;
+
+	UPROPERTY(BlueprintReadWrite, Category = "Control")
+	int32 Mode = 0;
+
+	UPROPERTY(BlueprintReadWrite, Category = "Control")
+	int32 DroneMask = 0;
+
+	UPROPERTY(BlueprintReadWrite, Category = "Control")
+	int32 Sequence = 0;
+
+	FMultiDroneControlPacket() = default;
+};
+
+/**
+ * Map center configuration
+ */
+USTRUCT(BlueprintType)
+struct FMapCenterConfig
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Map")
+	double Latitude = 0.0;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Map")
+	double Longitude = 0.0;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Map")
+	double Altitude = 0.0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Map")
+	bool bIsInitialized = false;
+
+	FMapCenterConfig() = default;
+};
+
+/**
+ * Camera mode state
+ */
+USTRUCT(BlueprintType)
+struct FCameraModeState
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadWrite, Category = "Camera")
+	EDroneCameraMode CameraMode = EDroneCameraMode::Follow;
+
+	UPROPERTY(BlueprintReadWrite, Category = "Camera")
+	int32 FollowDroneId = 0;
+
+	UPROPERTY(BlueprintReadWrite, Category = "Camera")
+	FVector LastFollowLocation = FVector::ZeroVector;
+
+	UPROPERTY(BlueprintReadWrite, Category = "Camera")
+	FRotator LastFollowRotation = FRotator::ZeroRotator;
+
+	FCameraModeState() = default;
+};
+
+/**
+ * Formation member slot
+ */
+USTRUCT(BlueprintType)
+struct FFormationMemberSlot
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Formation")
+	int32 DroneId = 0;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Formation")
+	FString RoleName = TEXT("Member");
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Formation")
+	FVector RelativeOffset = FVector::ZeroVector;
+
+	FFormationMemberSlot() = default;
+};
+
+/**
+ * Formation step
+ */
+USTRUCT(BlueprintType)
+struct FFormationStep
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Formation")
+	int32 StepId = 0;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Formation")
+	float DurationSec = 1.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Formation")
+	TMap<int32, FVector> MemberTargets;
+
+	FFormationStep() = default;
+};
+
+/**
+ * Formation execution state
+ */
+USTRUCT(BlueprintType)
+struct FFormationExecutionState
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Formation")
+	int32 PresetId = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Formation")
+	int32 StepIndex = 0;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Formation")
+	float ElapsedSec = 0.0f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Formation")
+	bool bPaused = false;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Formation")
+	TArray<int32> ParticipantIds;
+
+	FFormationExecutionState() = default;
+};

@@ -8,6 +8,7 @@
 
 class ARealTimeDroneReceiver;
 class AUE5DroneControlCharacter;
+class UDroneCommandSenderComponent;
 
 UCLASS()
 class UE5DRONECONTROL_API AMultiDroneManager : public AActor
@@ -46,4 +47,10 @@ public:
 	// Cached sender list (order follows discovery).
 	UPROPERTY(BlueprintReadOnly, Category = "Multi Drone")
 	TArray<AUE5DroneControlCharacter*> DroneSenders;
+
+	// Canonical UDP command sender for the scene.
+	// DroneOpsPlayerController obtains a reference to this component.
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<UDroneCommandSenderComponent> CommandSenderComponent;
 };
+
