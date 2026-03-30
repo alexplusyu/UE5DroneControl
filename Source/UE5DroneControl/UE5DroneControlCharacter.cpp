@@ -1,0 +1,355 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#include "UE5DroneControlCharacter.h"
+#include "UObject/ConstructorHelpers.h"
+#include "Camera/CameraComponent.h"
+#include "Components/DecalComponent.h"
+#include "Components/CapsuleComponent.h"
+#include "GameFramework/CharacterMovementComponent.h"
+#include "GameFramework/PlayerController.h"
+#include "GameFramework/SpringArmComponent.h"
+#include "Materials/Material.h"
+#include "Engine/World.h"
+
+// 【网络库头文件】
+#include "Sockets.h"
+#include "SocketSubsystem.h"
+#include "Networking.h"
+#include "Interfaces/IPv4/IPv4Address.h"
+#include "Common/UdpSocketBuilder.h" // 【新增】使用 Builder 模式创建 UDP Socket，避开 LAN 报错
+
+// 【新增】用于视角切换
+#include "Kismet/GameplayStatics.h"
+#include "RealTimeDroneReceiver.h"
+
+AUE5DroneControlCharacter::AUE5DroneControlCharacter()
+{
+    // Set size for player capsule
+    GetCapsuleComponent()->InitCapsuleSize(42.f, 96.0f);
+
+    // Don't rotate character to camera direction
+    bUseControllerRotationPitch = false;
+    bUseControllerRotationYaw = false;
+    bUseControllerRotationRoll = false;
+
+    // Configure character movement
+    GetCharacterMovement()->bOrientRotationToMovement = true;
+    GetCharacterMovement()->RotationRate = FRotator(0.f, 640.f, 0.f);
+    GetCharacterMovement()->bConstrainToPlane = true;
+    GetCharacterMovement()->bSnapToPlaneAtStart = true;
+
+    // Set to Flying mode to prevent falling
+    GetCharacterMovement()->SetMovementMode(MOVE_Flying);
+    GetCharacterMovement()->GravityScale = 0.0f;
+
+    // Create the camera boom component
+    CameraBoom = CreateDefaultSubobject<USpringArmComponent>(TEXT("CameraBoom"));
+    CameraBoom->SetupAttachment(RootComponent);
+    CameraBoom->SetUsingAbsoluteRotation(true);
+    CameraBoom->TargetArmLength = 1200.f; // 稍微拉远一点视角
+    CameraBoom->SetRelativeRotation(FRotator(-60.f, 0.f, 0.f));
+    CameraBoom->bDoCollisionTest = false;
+
+    // Create the camera component
+    TopDownCameraComponent = CreateDefaultSubobject<UCameraComponent>(TEXT("TopDownCamera"));
+    TopDownCameraComponent->SetupAttachment(CameraBoom, USpringArmComponent::SocketName);
+    TopDownCameraComponent->bUsePawnControlRotation = false;
+
+    // Activate ticking in order to update the cursor every frame.
+    // 【关键】必须开启 Tick
+    PrimaryActorTick.bCanEverTick = true;
+    PrimaryActorTick.bStartWithTickEnabled = true;
+
+    // --- 初始化我们的变量 ---
+    TargetHeight = 1000.0f;
+    LiftSpeed = 300.0f;
+    InterpSpeed = 4.0f;
+    MinHeight = 50.0f;
+    MaxHeight = 10000.0f;
+
+    // 初始化相机状态（默认为斜视角）
+    bIsTopDownView = false;
+
+    // 初始化网络指针
+    SenderSocket = nullptr;
+}
+
+void AUE5DroneControlCharacter::BeginPlay()
+{
+    Super::BeginPlay();
+
+    // 游戏开始时，让 Mesh 直接对齐到目标高度
+    if (USkeletalMeshComponent* MyMesh = GetMesh())
+    {
+        FVector CurrentRelLoc = MyMesh->GetRelativeLocation();
+        MyMesh->SetRelativeLocation(FVector(CurrentRelLoc.X, CurrentRelLoc.Y, TargetHeight));
+    }
+
+    // --- 【修改】使用 Builder 创建 UDP Socket (更稳健) ---
+    // 这样就不需要担心 LAN 宏定义的问题了
+    SenderSocket = FUdpSocketBuilder(TEXT("DroneSenderSocket"))
+        .AsReusable()
+        .WithBroadcast(); // 允许广播，方便调试
+
+    if (SenderSocket)
+    {
+        ISocketSubsystem* SocketSubs = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+        if (SocketSubs)
+        {
+            // 2. 设置目标地址 (PC B 的 IP)
+            // 注意：RemoteIP 是我们在编辑器里填的字符串 "192.168.x.x"
+            RemoteAddr = SocketSubs->CreateInternetAddr();
+
+            FIPv4Address IP;
+            bool bIsValidIP = FIPv4Address::Parse(RemoteIP, IP); // 解析字符串IP
+
+            if (bIsValidIP)
+            {
+                RemoteAddr->SetIp(IP.Value);
+                RemoteAddr->SetPort(RemotePort);
+                UE_LOG(LogTemp, Warning, TEXT("✅ UDP Socket Created! Sending to %s:%d"), *RemoteIP, RemotePort);
+            }
+            else
+            {
+                UE_LOG(LogTemp, Error, TEXT("❌ Invalid Remote IP: %s"), *RemoteIP);
+            }
+        }
+    }
+    else
+    {
+        UE_LOG(LogTemp, Error, TEXT("❌ Failed to create UDP Socket!"));
+    }
+}
+
+void AUE5DroneControlCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+    Super::EndPlay(EndPlayReason);
+
+    // 游戏结束时关闭 Socket，释放资源
+    if (SenderSocket)
+    {
+        SenderSocket->Close();
+        ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->DestroySocket(SenderSocket);
+        SenderSocket = nullptr;
+    }
+}
+
+void AUE5DroneControlCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
+{
+    Super::SetupPlayerInputComponent(PlayerInputComponent);
+
+    // 绑定 "Lift" 轴
+    PlayerInputComponent->BindAxis("Lift", this, &AUE5DroneControlCharacter::Input_Lift);
+
+    // 绑定空格键切换相机视角
+    PlayerInputComponent->BindAction("ToggleCamera", IE_Pressed, this, &AUE5DroneControlCharacter::ToggleCameraView);
+
+    // 绑定数字键0和1切换视角
+    PlayerInputComponent->BindAction("SwitchToTopDown", IE_Pressed, this, &AUE5DroneControlCharacter::SwitchToTopDownView);
+    PlayerInputComponent->BindAction("SwitchToRealTime", IE_Pressed, this, &AUE5DroneControlCharacter::SwitchToRealTimeView);
+}
+
+void AUE5DroneControlCharacter::Input_Lift(float Value)
+{
+    if (Value != 0.0f)
+    {
+        float Delta = Value * LiftSpeed * GetWorld()->GetDeltaSeconds();
+        TargetHeight += Delta;
+        TargetHeight = FMath::Clamp(TargetHeight, MinHeight, MaxHeight);
+
+        // 当我们在按 W/S 时，强制立即发送一次数据 (高频)
+        // 这样手感更跟手
+        FVector CurrentPos = GetMesh()->GetComponentLocation(); // 注意用 GetComponentLocation 拿真实的世界坐标
+        SendUDPData(CurrentPos, 1); // Mode 1 = Moving
+    }
+}
+
+// --- 【新增】相机切换函数 ---
+void AUE5DroneControlCharacter::ToggleCameraView()
+{
+    // 获取PlayerController
+    APlayerController* PC = Cast<APlayerController>(GetController());
+    if (!PC) return;
+
+    // 获取当前的ViewTarget（可能是自己，也可能是RealTimeDrone）
+    AActor* CurrentViewTarget = PC->GetViewTarget();
+    AUE5DroneControlCharacter* TargetCharacter = Cast<AUE5DroneControlCharacter>(CurrentViewTarget);
+
+    // 如果ViewTarget是Character类型（包括RealTimeDrone），就修改它的相机
+    if (TargetCharacter && TargetCharacter->GetCameraBoom())
+    {
+        USpringArmComponent* TargetCameraBoom = TargetCharacter->GetCameraBoom();
+
+        // 切换视角状态
+        TargetCharacter->bIsTopDownView = !TargetCharacter->bIsTopDownView;
+
+        // 根据状态设置相机角度
+        if (TargetCharacter->bIsTopDownView)
+        {
+            // 纯俯视视角（-90度）
+            TargetCameraBoom->SetRelativeRotation(FRotator(-90.f, 0.f, 0.f));
+            UE_LOG(LogTemp, Log, TEXT("Camera switched to Top-Down view (-90 degrees) on %s"), *TargetCharacter->GetName());
+        }
+        else
+        {
+            // 斜视角（-60度）
+            TargetCameraBoom->SetRelativeRotation(FRotator(-60.f, 0.f, 0.f));
+            UE_LOG(LogTemp, Log, TEXT("Camera switched to Angled view (-60 degrees) on %s"), *TargetCharacter->GetName());
+        }
+    }
+}
+
+// --- 【新增】切换到TopDown角色视角（数字键0）---
+void AUE5DroneControlCharacter::SwitchToTopDownView()
+{
+    APlayerController* PC = Cast<APlayerController>(GetController());
+    if (PC)
+    {
+        PC->SetViewTargetWithBlend(this, 0.5f);
+        UE_LOG(LogTemp, Log, TEXT("Switched to TopDown Character view"));
+    }
+}
+
+// --- 【新增】切换到RealTimeDrone视角（数字键1）---
+void AUE5DroneControlCharacter::SwitchToRealTimeView()
+{
+    APlayerController* PC = Cast<APlayerController>(GetController());
+    if (PC)
+    {
+        // 查找场景中的RealTimeDrone
+        TArray<AActor*> FoundActors;
+        UGameplayStatics::GetAllActorsOfClass(GetWorld(), ARealTimeDroneReceiver::StaticClass(), FoundActors);
+
+        if (FoundActors.Num() > 0)
+        {
+            AActor* RealTimeDrone = FoundActors[0];
+            PC->SetViewTargetWithBlend(RealTimeDrone, 0.5f);
+            UE_LOG(LogTemp, Log, TEXT("Switched to RealTimeDrone view"));
+        }
+        else
+        {
+            UE_LOG(LogTemp, Warning, TEXT("RealTimeDrone not found in level!"));
+        }
+    }
+}
+
+// --- 【新增】发送函数 ---
+void AUE5DroneControlCharacter::SendUDPData(FVector TargetLocation, int32 Mode)
+{
+    if (!bEnableUDPSend || !SenderSocket || !RemoteAddr.IsValid()) return;
+
+    // 1. 准备数据包
+    FDroneSocketData Data;
+    Data.Timestamp = FDateTime::UtcNow().ToUnixTimestamp();
+
+    // 关键修复：
+    // 不再依赖外部传入的 TargetLocation（玩家点击地面时 Z 通常为地面高度），
+    // 始终使用 Mesh 的世界坐标作为发送位置 —— 这样无论高度是通过 Mesh 相对偏移实现（演示高空）
+    // 还是通过 Actor 本身移动，实现的位置信息都会被准确地发送。
+    FVector WorldPos;
+    if (USkeletalMeshComponent* MyMesh = GetMesh())
+    {
+        WorldPos = MyMesh->GetComponentLocation();
+    }
+    else
+    {
+        WorldPos = GetActorLocation();
+    }
+
+    Data.X = WorldPos.X;
+    Data.Y = WorldPos.Y;
+    Data.Z = WorldPos.Z;
+
+    Data.Mode = Mode;
+
+    //调试
+    UE_LOG(LogTemp, Log, TEXT("Preparing UDP packet -> Timestamp=%.0f, X=%.3f, Y=%.3f, Z=%.3f, Mode=%d, Remote=%s:%d"),
+        Data.Timestamp, Data.X, Data.Y, Data.Z, Data.Mode, *RemoteIP, RemotePort);// 2. 发送
+    int32 BytesSent = 0;
+    SenderSocket->SendTo((uint8*)&Data, sizeof(FDroneSocketData), BytesSent, *RemoteAddr);
+}
+
+// --- 【新增】发送目标点坐标（不使用自身位置） ---
+void AUE5DroneControlCharacter::SendUDPTargetLocation(FVector TargetLocation, int32 Mode)
+{
+    if (!bEnableUDPSend || !SenderSocket || !RemoteAddr.IsValid()) return;
+
+    FDroneSocketData Data;
+    Data.Timestamp = FDateTime::UtcNow().ToUnixTimestamp();
+    Data.X = TargetLocation.X;
+    Data.Y = TargetLocation.Y;
+    Data.Z = TargetLocation.Z;
+    Data.Mode = Mode;
+
+    UE_LOG(LogTemp, Log, TEXT("Preparing UDP packet (Target) -> Timestamp=%.0f, X=%.3f, Y=%.3f, Z=%.3f, Mode=%d, Remote=%s:%d"),
+        Data.Timestamp, Data.X, Data.Y, Data.Z, Data.Mode, *RemoteIP, RemotePort);
+
+    int32 BytesSent = 0;
+    SenderSocket->SendTo((uint8*)&Data, sizeof(FDroneSocketData), BytesSent, *RemoteAddr);
+}
+
+void AUE5DroneControlCharacter::SetClickTargetLocation(FVector TargetLocation, int32 Mode)
+{
+    ClickTargetLocation = TargetLocation;
+    ClickTargetMode = Mode;
+    bSendClickTarget = true;
+    ClickSendTimer = ClickSendInterval; // 触发立即发送
+
+    SendUDPTargetLocation(ClickTargetLocation, ClickTargetMode);
+}
+
+void AUE5DroneControlCharacter::StopClickTargetSending()
+{
+    bSendClickTarget = false;
+}
+
+void AUE5DroneControlCharacter::Tick(float DeltaSeconds)
+{
+    Super::Tick(DeltaSeconds);
+
+    // 平滑移动逻辑
+    if (USkeletalMeshComponent* MyMesh = GetMesh())
+    {
+        FVector CurrentRelLoc = MyMesh->GetRelativeLocation();
+        float NewZ = FMath::FInterpTo(CurrentRelLoc.Z, TargetHeight, DeltaSeconds, InterpSpeed);
+        MyMesh->SetRelativeLocation(FVector(CurrentRelLoc.X, CurrentRelLoc.Y, NewZ));
+
+        // 让摄像头支架 (CameraBoom) 也跟着升降
+        if (CameraBoom)
+        {
+            FVector BoomLoc = CameraBoom->GetRelativeLocation();
+            CameraBoom->SetRelativeLocation(FVector(BoomLoc.X, BoomLoc.Y, NewZ));
+        }
+
+        if (bEnableUDPSend)
+        {
+            // 到达点击目标点后，切换为悬停模式（Mode=0）
+            if (bSendClickTarget)
+            {
+                FVector CurrentPos = MyMesh ? MyMesh->GetComponentLocation() : GetActorLocation();
+                const float DistSq = FVector::DistSquared(CurrentPos, ClickTargetLocation);
+                const float ThresholdSq = ClickArriveThreshold * ClickArriveThreshold;
+                if (DistSq <= ThresholdSq)
+                {
+                    bSendClickTarget = false;
+                }
+            }
+
+            // --- 【新增】自动发送逻辑 (心跳包) ---
+            SendTimer += DeltaSeconds;
+            if (SendTimer >= SendInterval)
+            {
+                SendTimer = 0.0f;
+                if (bSendClickTarget)
+                {
+                    SendUDPTargetLocation(ClickTargetLocation, ClickTargetMode);
+                }
+                else
+                {
+                    // Mode 0 = Idle (如果按了 W/S 或点击了移动，由那些事件去发高频包)
+                    SendUDPData(MyMesh->GetComponentLocation(), 0);
+                }
+            }
+        }
+    }
+}
