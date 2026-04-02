@@ -10,6 +10,11 @@
 class UDroneRegistrySubsystem;
 
 /**
+ * Delegate for when drone info panel is requested by middle click.
+ */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnOpenDroneInfoPanelRequested, int32, DroneId);
+
+/**
  * Player controller for drone operations
  * Handles input, selection, camera modes, and command dispatch
  */
@@ -56,4 +61,12 @@ protected:
 
 	UFUNCTION(BlueprintCallable, Category = "DroneOps")
 	bool GetWorldLocationUnderCursor(FVector& OutLocation) const;
+
+public:
+	/**
+	 * Event broadcast when user clicks middle mouse button while hovering a drone.
+	 * The HUD should handle this event and open the drone info panel.
+	 */
+	UPROPERTY(BlueprintAssignable, Category = "DroneOps Events")
+	FOnOpenDroneInfoPanelRequested OnOpenDroneInfoPanelRequested;
 };

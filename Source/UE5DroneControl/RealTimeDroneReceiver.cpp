@@ -714,3 +714,13 @@ void ARealTimeDroneReceiver::PushTelemetry(const FDroneYAMLData& DroneData, cons
 
 	TelemetryComponent->PushSnapshot(Snap);
 }
+
+FDroneTelemetrySnapshot ARealTimeDroneReceiver::GetDroneInfoSnapshot_Implementation() const
+{
+	if (TelemetryComponent && TelemetryComponent->HasValidTelemetry())
+	{
+		return TelemetryComponent->GetCurrentSnapshot();
+	}
+
+	return FDroneTelemetrySnapshot();
+}

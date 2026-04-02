@@ -3,6 +3,8 @@
 #include "DroneOpsPlayerController.h"
 #include "DroneOps/Core/DroneRegistrySubsystem.h"
 #include "DroneOps/Core/ICoordinateService.h"
+#include "DroneOps/Interfaces/DroneSelectableInterface.h"
+#include "DroneOps/Interfaces/DroneInfoProviderInterface.h"
 #include "Engine/World.h"
 #include "DrawDebugHelpers.h"
 
@@ -56,9 +58,15 @@ void ADroneOpsPlayerController::Tick(float DeltaTime)
 	AActor* HoveredActor = GetActorUnderCursor();
 	if (HoveredActor)
 	{
-		// TODO: Check if actor implements IDroneSelectableInterface
-		// For now, just log
-		// HoveredDroneId = ...;
+		// Check if actor implements IDroneSelectable (which means it's a drone)
+		if (IDroneSelectableInterface* Drone = Cast<IDroneSelectableInterface>(HoveredActor))
+		{
+			HoveredDroneId = Drone->GetDroneId();
+		}
+		else
+		{
+			HoveredDroneId = 0;
+		}
 	}
 	else
 	{
@@ -89,8 +97,13 @@ void ADroneOpsPlayerController::OnShowInfo()
 {
 	if (HoveredDroneId > 0)
 	{
-		UE_LOG(LogTemp, Log, TEXT("Show info for DroneId: %d"), HoveredDroneId);
-		// TODO: Open info panel widget
+		UE_LOG(LogTemp, Log, TEXT("[FR-03] Opening info panel for DroneId: %d"), HoveredDroneId);
+		// Broadcast the request to the HUD
+		OnOpenDroneInfoPanelRequested.Broadcast(HoveredDroneId);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Log, TEXT("[FR-03] Middle click - no drone under cursor"));
 	}
 }
 
