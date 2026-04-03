@@ -6,6 +6,8 @@
 #include "DroneOps/Interfaces/DroneSelectableInterface.h"
 #include "DroneOps/Interfaces/DroneInfoProviderInterface.h"
 #include "Engine/World.h"
+#include "Engine/Engine.h"
+#include "Blueprint/UserWidget.h"
 #include "DrawDebugHelpers.h"
 
 ADroneOpsPlayerController::ADroneOpsPlayerController()
@@ -15,6 +17,20 @@ ADroneOpsPlayerController::ADroneOpsPlayerController()
 	bEnableMouseOverEvents = true;
 
 	PrimaryActorTick.bCanEverTick = true;
+
+	// Set default paths to the widgets
+	// These are the expected default paths in your content browser
+	static ConstructorHelpers::FClassFinder<UUserWidget> InfoPanelFinder(TEXT("/Game/DroneOps/UI/WBP_DroneInfoPanel"));
+	if (InfoPanelFinder.Succeeded())
+	{
+		DroneInfoPanelWidgetClass = InfoPanelFinder.Class;
+	}
+
+	static ConstructorHelpers::FClassFinder<UUserWidget> HUDFinder(TEXT("/Game/DroneOps/UI/WBP_DroneOpsHUD"));
+	if (HUDFinder.Succeeded())
+	{
+		DroneOpsHUDWidgetClass = HUDFinder.Class;
+	}
 }
 
 void ADroneOpsPlayerController::BeginPlay()
@@ -35,6 +51,21 @@ void ADroneOpsPlayerController::BeginPlay()
 	// Initialize camera mode
 	CameraModeState.CameraMode = EDroneCameraMode::Follow;
 	CameraModeState.FollowDroneId = 0;
+
+	// Create and add main HUD widget to viewport
+	if (DroneOpsHUDWidgetClass && IsLocalController())
+	{
+		UUserWidget* HUDWidget = CreateWidget(this, DroneOpsHUDWidgetClass);
+		if (HUDWidget)
+		{
+			HUDWidget->AddToViewport();
+			UE_LOG(LogTemp, Log, TEXT("DroneOpsPlayerController: HUD widget created and added to viewport"));
+		}
+		else
+		{
+			UE_LOG(LogTemp, Error, TEXT("DroneOpsPlayerController: Failed to create HUD widget"));
+		}
+	}
 }
 
 void ADroneOpsPlayerController::SetupInputComponent()
@@ -58,14 +89,22 @@ void ADroneOpsPlayerController::Tick(float DeltaTime)
 	AActor* HoveredActor = GetActorUnderCursor();
 	if (HoveredActor)
 	{
+		// Debug: log what actor we hit
+		UE_LOG(LogTemp, Verbose, TEXT("[FR-03] Hovered actor: %s (class: %s)"),
+			*HoveredActor->GetName(), *HoveredActor->GetClass()->GetName());
+
 		// Check if actor implements IDroneSelectable (which means it's a drone)
-		if (IDroneSelectableInterface* Drone = Cast<IDroneSelectableInterface>(HoveredActor))
+		if (Cast<IDroneSelectableInterface>(HoveredActor) != nullptr)
 		{
-			HoveredDroneId = Drone->GetDroneId();
+			// For BlueprintNativeEvent functions, must use Execute_* static call
+			HoveredDroneId = IDroneSelectableInterface::Execute_GetDroneId(HoveredActor);
+			UE_LOG(LogTemp, Log, TEXT("[FR-03] Hovered drone detected, DroneId: %d"), HoveredDroneId);
 		}
 		else
 		{
 			HoveredDroneId = 0;
+			UE_LOG(LogTemp, Verbose, TEXT("[FR-03] Hovered actor doesn't implement IDroneSelectable: %s"),
+				*HoveredActor->GetName());
 		}
 	}
 	else
@@ -95,16 +134,103 @@ void ADroneOpsPlayerController::OnPrimaryClick()
 
 void ADroneOpsPlayerController::OnShowInfo()
 {
-	if (HoveredDroneId > 0)
+	// Debug: re-check hover state immediately when middle click is pressed
+	AActor* HoveredActor = GetActorUnderCursor();
+	if (!HoveredActor)
 	{
-		UE_LOG(LogTemp, Log, TEXT("[FR-03] Opening info panel for DroneId: %d"), HoveredDroneId);
-		// Broadcast the request to the HUD
-		OnOpenDroneInfoPanelRequested.Broadcast(HoveredDroneId);
+		UE_LOG(LogTemp, Log, TEXT("[FR-03] Middle click - GetActorUnderCursor returned nullptr, cached HoveredDroneId=%d"), HoveredDroneId);
 	}
 	else
 	{
-		UE_LOG(LogTemp, Log, TEXT("[FR-03] Middle click - no drone under cursor"));
+		UE_LOG(LogTemp, Log, TEXT("[FR-03] Middle click - Hit actor: %s, class: %s"), *HoveredActor->GetName(), *HoveredActor->GetClass()->GetName());
+
+		bool bImplements = HoveredActor->Implements<UDroneSelectableInterface>();
+		if (!bImplements)
+		{
+			UE_LOG(LogTemp, Log, TEXT("[FR-03] Actor doesn't implement UDroneSelectableInterface"));
+		}
+		else
+		{
+			int32 CurrentDroneId = IDroneSelectableInterface::Execute_GetDroneId(HoveredActor);
+			UE_LOG(LogTemp, Log, TEXT("[FR-03] Got DroneId: %d from %s"), CurrentDroneId, *HoveredActor->GetName());
+			if (CurrentDroneId > 0)
+			{
+				OpenDroneInfoPanel(CurrentDroneId);
+				return;
+			}
+		}
 	}
+	UE_LOG(LogTemp, Log, TEXT("[FR-03] Middle click - no drone under cursor, cached HoveredDroneId=%d"), HoveredDroneId);
+}
+
+void ADroneOpsPlayerController::OpenDroneInfoPanel(int32 DroneId)
+{
+	if (!DroneRegistry || !DroneInfoPanelWidgetClass)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[FR-03] OpenDroneInfoPanel: DroneRegistry=%p, WidgetClass=%p"),
+			DroneRegistry.Get(), DroneInfoPanelWidgetClass.Get());
+		return;
+	}
+
+	// Close existing panel if any
+	if (CurrentDroneInfoPanel && CurrentDroneInfoPanel->IsValidLowLevel())
+	{
+		CurrentDroneInfoPanel->RemoveFromParent();
+		CurrentDroneInfoPanel = nullptr;
+	}
+
+	// Get telemetry snapshot
+	FDroneTelemetrySnapshot Snapshot;
+	bool bGotTelemetry = DroneRegistry->GetTelemetry(DroneId, Snapshot);
+	UE_LOG(LogTemp, Log, TEXT("[FR-03] GetTelemetry for DroneId=%d, result=%d"), DroneId, bGotTelemetry);
+
+	// Get drone descriptor
+	FDroneDescriptor Descriptor;
+	bool bGotDescriptor = DroneRegistry->GetDroneDescriptor(DroneId, Descriptor);
+	UE_LOG(LogTemp, Log, TEXT("[FR-03] GetDroneDescriptor for DroneId=%d, name=%s, result=%d"),
+		DroneId, *Descriptor.Name, bGotDescriptor);
+
+	// Create widget instance
+	UUserWidget* NewPanel = CreateWidget(this, DroneInfoPanelWidgetClass);
+	if (!NewPanel)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[FR-03] Failed to create info panel widget"));
+		return;
+	}
+
+	// Call UpdateFromSnapshot on the widget
+	// The function is BlueprintCallable, so we can call it via reflection
+	UFunction* Func = NewPanel->FindFunction(FName("UpdateFromSnapshot"));
+	if (Func)
+	{
+		// Prepare parameters: struct Snapshot + string DroneName
+		TArray<uint8> ParamsBuffer;
+		ParamsBuffer.SetNum(Func->ParmsSize);
+
+		// First parameter is Snapshot
+		FDroneTelemetrySnapshot* pSnapshot = reinterpret_cast<FDroneTelemetrySnapshot*>(ParamsBuffer.GetData());
+		*pSnapshot = Snapshot;
+
+		// Second parameter is DroneName (FString)
+		FString* pName = reinterpret_cast<FString*>(ParamsBuffer.GetData() + sizeof(FDroneTelemetrySnapshot));
+		*pName = Descriptor.Name;
+
+		// Call the function
+		NewPanel->ProcessEvent(Func, ParamsBuffer.GetData());
+		UE_LOG(LogTemp, Log, TEXT("[FR-03] Called UpdateFromSnapshot with DroneId=%d, name=%s"), DroneId, *Descriptor.Name);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Error, TEXT("[FR-03] UpdateFromSnapshot function not found on widget"));
+	}
+
+	// Add to viewport at top-left
+	NewPanel->AddToViewport();
+	NewPanel->SetPositionInViewport(FVector2D(10, 10));
+
+	// Save reference
+	CurrentDroneInfoPanel = NewPanel;
+	UE_LOG(LogTemp, Log, TEXT("[FR-03] Info panel opened successfully for DroneId=%d"), DroneId);
 }
 
 void ADroneOpsPlayerController::OnFreeCamToggle()
@@ -204,8 +330,11 @@ void ADroneOpsPlayerController::SendTargetCommand(int32 DroneId, const FVector& 
 AActor* ADroneOpsPlayerController::GetActorUnderCursor() const
 {
 	FHitResult HitResult;
-	if (GetHitResultUnderCursor(ECC_Visibility, false, HitResult))
+	if (GetHitResultUnderCursor(ECC_Visibility, true, HitResult))
 	{
+		UE_LOG(LogTemp, Verbose, TEXT("[FR-03] Ray trace hit: %s at (%.1f, %.1f, %.1f)"),
+			HitResult.GetActor() ? *HitResult.GetActor()->GetName() : TEXT("NULL"),
+			HitResult.Location.X, HitResult.Location.Y, HitResult.Location.Z);
 		return HitResult.GetActor();
 	}
 	return nullptr;

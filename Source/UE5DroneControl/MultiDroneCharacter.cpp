@@ -7,11 +7,24 @@
 #include "DroneOps/Core/DroneOpsTypes.h"
 #include "Engine/World.h"
 #include "Engine/GameInstance.h"
+#include "Components/CapsuleComponent.h"
 
 AMultiDroneCharacter::AMultiDroneCharacter()
 {
 	SelectionComponent = CreateDefaultSubobject<UDroneSelectionComponent>(TEXT("SelectionComponent"));
 	CommandSenderComponent = CreateDefaultSubobject<UDroneCommandSenderComponent>(TEXT("CommandSenderComponent"));
+
+	// 确保碰撞设置正确，支持鼠标悬停检测
+	if (UCapsuleComponent* Capsule = GetCapsuleComponent())
+	{
+		// 保持 Pawn 配置，但确保 Visibility 通道阻塞（鼠标检测需要）
+		Capsule->SetCollisionProfileName(TEXT("Pawn"));
+		Capsule->SetCollisionResponseToChannel(ECC_Pawn, ECR_Ignore);
+		Capsule->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
+		// 【关键】确保 Visibility 通道阻塞 - 鼠标悬停检测需要
+		Capsule->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
+		Capsule->SetSimulatePhysics(false);
+	}
 }
 
 void AMultiDroneCharacter::BeginPlay()
