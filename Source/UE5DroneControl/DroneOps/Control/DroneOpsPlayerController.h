@@ -90,6 +90,10 @@ public:
 	TSubclassOf<UUserWidget> DroneInfoPanelWidgetClass;
 
 private:
+	AActor* GetSelectableDroneUnderCursor(FVector* OutFallbackWorldLocation = nullptr) const;
+	AActor* FindNearestSelectableDroneOnScreen(float MaxScreenDistance) const;
+	AActor* ResolveDroneActorById(int32 DroneId) const;
+
 	/** Current open info panel, if any */
 	UPROPERTY()
 	UUserWidget* CurrentDroneInfoPanel = nullptr;

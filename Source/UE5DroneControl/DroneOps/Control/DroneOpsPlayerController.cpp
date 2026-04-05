@@ -20,6 +20,7 @@
 #include "Kismet/GameplayStatics.h"
 #include "DrawDebugHelpers.h"
 #include "EngineUtils.h"
+#include "UObject/ConstructorHelpers.h"
 
 namespace
 {
@@ -627,7 +628,10 @@ AActor* ADroneOpsPlayerController::GetSelectableDroneUnderCursor(FVector* OutFal
 	const float ClickRadius = 200.0f;
 	TArray<FOverlapResult> Overlaps;
 	FCollisionQueryParams QueryParams;
-	QueryParams.AddIgnoredActor(GetPawn());
+	if (const APawn* PawnToIgnore = GetPawn())
+	{
+		QueryParams.AddIgnoredActor(static_cast<const AActor*>(PawnToIgnore));
+	}
 
 	if (!GetWorld()->OverlapMultiByChannel(
 		Overlaps,
