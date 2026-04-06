@@ -4,7 +4,6 @@
 #include "DroneOps/Core/DroneRegistrySubsystem.h"
 #include "DroneOps/Core/SimpleCoordinateService.h"
 #include "DroneOpsPlayerController.h"
-#include "Kismet/GameplayStatics.h"
 #include "MultiDroneCharacter.h"
 #include "EngineUtils.h"
 
@@ -28,13 +27,26 @@ void ADroneOpsGameMode::BeginPlay()
 
 	// Initialize drone registry
 	InitializeDroneRegistry();
+
+	RemainingPossessRetries = 10;
+	RetryPossessPlacedPawns();
+
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().SetTimer(
+			RetryPossessTimerHandle,
+			this,
+			&ADroneOpsGameMode::RetryPossessPlacedPawns,
+			0.1f,
+			true);
+	}
 }
 
 void ADroneOpsGameMode::PostLogin(APlayerController* NewPlayer)
 {
 	Super::PostLogin(NewPlayer);
 
-	PossessPlacedPawn(NewPlayer);
+	PossessPlacedPawn(NewPlayer, true, false);
 }
 
 APawn* ADroneOpsGameMode::SpawnDefaultPawnFor_Implementation(AController* NewPlayer, AActor* StartSpot)
@@ -86,7 +98,7 @@ void ADroneOpsGameMode::InitializeDroneRegistry()
 	UE_LOG(LogTemp, Log, TEXT("DroneOpsGameMode: DroneRegistry ready for registration"));
 }
 
-APawn* ADroneOpsGameMode::FindUnpossessedPlacedPawn() const
+APawn* ADroneOpsGameMode::FindUnpossessedPlacedPawn(bool bLogDiscoveredPawns) const
 {
 	UWorld* World = GetWorld();
 	if (!World)
@@ -94,6 +106,7 @@ APawn* ADroneOpsGameMode::FindUnpossessedPlacedPawn() const
 		return nullptr;
 	}
 
+	int32 DiscoveredPawnCount = 0;
 	for (TActorIterator<AMultiDroneCharacter> It(World); It; ++It)
 	{
 		AMultiDroneCharacter* DronePawn = *It;
@@ -102,16 +115,32 @@ APawn* ADroneOpsGameMode::FindUnpossessedPlacedPawn() const
 			continue;
 		}
 
+		++DiscoveredPawnCount;
+		if (bLogDiscoveredPawns)
+		{
+			UE_LOG(
+				LogTemp,
+				Log,
+				TEXT("DroneOpsGameMode: Found placed pawn %s (Controller=%s)"),
+				*DronePawn->GetName(),
+				DronePawn->Controller ? *DronePawn->Controller->GetName() : TEXT("None"));
+		}
+
 		if (DronePawn->Controller == nullptr)
 		{
 			return DronePawn;
 		}
 	}
 
+	if (bLogDiscoveredPawns)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("DroneOpsGameMode: Found %d AMultiDroneCharacter actors, none unpossessed"), DiscoveredPawnCount);
+	}
+
 	return nullptr;
 }
 
-void ADroneOpsGameMode::PossessPlacedPawn(APlayerController* PlayerController)
+void ADroneOpsGameMode::PossessPlacedPawn(APlayerController* PlayerController, bool bSilentIfNotFound, bool bLogDiscoveredPawns)
 {
 	if (!PlayerController)
 	{
@@ -123,12 +152,62 @@ void ADroneOpsGameMode::PossessPlacedPawn(APlayerController* PlayerController)
 		return;
 	}
 
-	if (APawn* ExistingPawn = FindUnpossessedPlacedPawn())
+	if (APawn* ExistingPawn = FindUnpossessedPlacedPawn(bLogDiscoveredPawns))
 	{
 		PlayerController->Possess(ExistingPawn);
 		UE_LOG(LogTemp, Log, TEXT("DroneOpsGameMode: Possessed placed pawn %s"), *ExistingPawn->GetName());
 		return;
 	}
 
-	UE_LOG(LogTemp, Warning, TEXT("DroneOpsGameMode: No unpossessed placed AMultiDroneCharacter found for %s"), *PlayerController->GetName());
+	if (!bSilentIfNotFound)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("DroneOpsGameMode: No unpossessed placed AMultiDroneCharacter found for %s"), *PlayerController->GetName());
+	}
+}
+
+void ADroneOpsGameMode::RetryPossessPlacedPawns()
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	bool bAnyPawnPossessedThisPass = false;
+	bool bAnyControllerMissingPawn = false;
+
+	for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
+	{
+		APlayerController* PlayerController = It->Get();
+		if (!PlayerController)
+		{
+			continue;
+		}
+
+		if (PlayerController->GetPawn())
+		{
+			continue;
+		}
+
+		bAnyControllerMissingPawn = true;
+		APawn* PawnBefore = PlayerController->GetPawn();
+		PossessPlacedPawn(PlayerController, RemainingPossessRetries > 1, true);
+		if (!PawnBefore && PlayerController->GetPawn())
+		{
+			bAnyPawnPossessedThisPass = true;
+		}
+	}
+
+	--RemainingPossessRetries;
+
+	if (!bAnyControllerMissingPawn || RemainingPossessRetries <= 0 || !World->GetTimerManager().IsTimerActive(RetryPossessTimerHandle))
+	{
+		World->GetTimerManager().ClearTimer(RetryPossessTimerHandle);
+		return;
+	}
+
+	if (bAnyPawnPossessedThisPass)
+	{
+		RemainingPossessRetries = FMath::Max(RemainingPossessRetries, 3);
+	}
 }

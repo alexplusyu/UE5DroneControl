@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/GameModeBase.h"
+#include "TimerManager.h"
 #include "DroneOpsGameMode.generated.h"
 
 class APawn;
@@ -39,6 +40,10 @@ protected:
 	bool bUseCesiumCoordinates = false;
 
 private:
-	APawn* FindUnpossessedPlacedPawn() const;
-	void PossessPlacedPawn(APlayerController* PlayerController);
+	APawn* FindUnpossessedPlacedPawn(bool bLogDiscoveredPawns) const;
+	void PossessPlacedPawn(APlayerController* PlayerController, bool bSilentIfNotFound, bool bLogDiscoveredPawns);
+	void RetryPossessPlacedPawns();
+
+	FTimerHandle RetryPossessTimerHandle;
+	int32 RemainingPossessRetries = 0;
 };
