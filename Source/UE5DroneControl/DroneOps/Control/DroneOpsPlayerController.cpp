@@ -152,7 +152,12 @@ void ADroneOpsPlayerController::BeginPlay()
 	}
 
 	CameraModeState.CameraMode = EDroneCameraMode::Follow;
-	CameraModeState.FollowDroneId = 0;
+	CameraModeState.FollowDroneId = DroneRegistry ? DroneRegistry->GetPrimarySelectedDrone() : 0;
+	LastFollowViewTarget = GetViewTarget();
+	if (AActor* InitialFollowTarget = ResolveFollowViewTargetByDroneId(CameraModeState.FollowDroneId))
+	{
+		LastFollowViewTarget = InitialFollowTarget;
+	}
 
 	// Create and add main HUD widget to viewport
 	if (DroneOpsHUDWidgetClass && IsLocalController())
@@ -379,12 +384,37 @@ void ADroneOpsPlayerController::OnFreeCamToggle()
 	if (CameraModeState.CameraMode == EDroneCameraMode::Follow)
 	{
 		CameraModeState.CameraMode = EDroneCameraMode::Free;
-		UE_LOG(LogTemp, Log, TEXT("Switched to Free Camera"));
+		AActor* CurrentViewTarget = GetViewTarget();
+		if (IsValid(CurrentViewTarget))
+		{
+			LastFollowViewTarget = CurrentViewTarget;
+			CameraModeState.LastFollowLocation = CurrentViewTarget->GetActorLocation();
+			CameraModeState.LastFollowRotation = CurrentViewTarget->GetActorRotation();
+		}
+
+		if (SelectedDroneId > 0)
+		{
+			CameraModeState.FollowDroneId = SelectedDroneId;
+		}
+		else if (DroneRegistry)
+		{
+			CameraModeState.FollowDroneId = DroneRegistry->GetPrimarySelectedDrone();
+		}
+
+		if (APawn* ControlledPawn = GetPawn())
+		{
+			SetViewTargetWithBlend(ControlledPawn, 0.35f);
+		}
+
+		CameraModeState.CameraMode = EDroneCameraMode::Free;
+		UE_LOG(LogTemp, Log, TEXT("Switched to Free Camera (FollowDroneId=%d, SavedView=%s)"),
+			CameraModeState.FollowDroneId,
+			IsValid(LastFollowViewTarget) ? *LastFollowViewTarget->GetName() : TEXT("None"));
 	}
 	else
 	{
 		CameraModeState.CameraMode = EDroneCameraMode::Follow;
-		UE_LOG(LogTemp, Log, TEXT("Switched to Follow Camera"));
+		ApplyFollowViewTarget(CameraModeState.FollowDroneId);
 	}
 }
 
@@ -731,4 +761,54 @@ AActor* ADroneOpsPlayerController::ResolveDroneActorById(int32 DroneId) const
 
 	AActor* ReceiverActor = DroneRegistry->GetReceiverActor(DroneId);
 	return IsFr2ControllableDroneActor(ReceiverActor) ? ReceiverActor : nullptr;
+}
+
+AActor* ADroneOpsPlayerController::ResolveFollowViewTargetByDroneId(int32 DroneId) const
+{
+	if (AActor* DroneActor = ResolveDroneActorById(DroneId))
+	{
+		return DroneActor;
+	}
+
+	if (IsValid(SelectedDroneActor))
+	{
+		return SelectedDroneActor.Get();
+	}
+
+	if (IsValid(LastFollowViewTarget))
+	{
+		return LastFollowViewTarget.Get();
+	}
+
+	return GetPawn();
+}
+
+void ADroneOpsPlayerController::ApplyFollowViewTarget(int32 DroneId)
+{
+	AActor* FollowTarget = ResolveFollowViewTargetByDroneId(DroneId);
+	if (!IsValid(FollowTarget))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("ApplyFollowViewTarget failed: no valid target for DroneId=%d"), DroneId);
+		return;
+	}
+
+	const int32 ResolvedDroneId = ResolveDroneIdFromActor(FollowTarget);
+	if (ResolvedDroneId > 0)
+	{
+		CameraModeState.FollowDroneId = ResolvedDroneId;
+	}
+	else
+	{
+		CameraModeState.FollowDroneId = DroneId;
+	}
+
+	LastFollowViewTarget = FollowTarget;
+	CameraModeState.LastFollowLocation = FollowTarget->GetActorLocation();
+	CameraModeState.LastFollowRotation = FollowTarget->GetActorRotation();
+
+	SetViewTargetWithBlend(FollowTarget, 0.35f);
+
+	UE_LOG(LogTemp, Log, TEXT("Switched to Follow Camera (FollowDroneId=%d, Target=%s)"),
+		CameraModeState.FollowDroneId,
+		*FollowTarget->GetName());
 }

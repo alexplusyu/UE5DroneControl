@@ -93,10 +93,16 @@ private:
 	AActor* GetSelectableDroneUnderCursor(FVector* OutFallbackWorldLocation = nullptr) const;
 	AActor* FindNearestSelectableDroneOnScreen(float MaxScreenDistance) const;
 	AActor* ResolveDroneActorById(int32 DroneId) const;
+	AActor* ResolveFollowViewTargetByDroneId(int32 DroneId) const;
+	void ApplyFollowViewTarget(int32 DroneId);
 
 	/** Current open info panel, if any */
 	UPROPERTY()
 	UUserWidget* CurrentDroneInfoPanel = nullptr;
+
+	/** Last non-free camera target so F can restore it */
+	UPROPERTY()
+	TObjectPtr<AActor> LastFollowViewTarget = nullptr;
 
 	/** Open drone info panel for given DroneId (C++ implementation) */
 	void OpenDroneInfoPanel(int32 DroneId);
