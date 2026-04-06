@@ -5,20 +5,16 @@
 #include "DroneOps/Core/SimpleCoordinateService.h"
 #include "DroneOpsPlayerController.h"
 #include "Kismet/GameplayStatics.h"
-#include "UObject/ConstructorHelpers.h"
+#include "MultiDroneCharacter.h"
+#include "EngineUtils.h"
 
 ADroneOpsGameMode::ADroneOpsGameMode()
 {
 	// Set default player controller class
 	PlayerControllerClass = ADroneOpsPlayerController::StaticClass();
 
-	// Load the TopDown character Blueprint so we get the spring-arm + camera setup
-	static ConstructorHelpers::FClassFinder<APawn> TopDownPawnBP(
-		TEXT("/Game/TopDown/Blueprints/BP_TopDownCharacter"));
-	if (TopDownPawnBP.Succeeded())
-	{
-		DefaultPawnClass = TopDownPawnBP.Class;
-	}
+	// Do not auto-spawn a default pawn. We only use pawns already placed in the level.
+	DefaultPawnClass = nullptr;
 }
 
 void ADroneOpsGameMode::BeginPlay()
@@ -32,6 +28,18 @@ void ADroneOpsGameMode::BeginPlay()
 
 	// Initialize drone registry
 	InitializeDroneRegistry();
+}
+
+void ADroneOpsGameMode::PostLogin(APlayerController* NewPlayer)
+{
+	Super::PostLogin(NewPlayer);
+
+	PossessPlacedPawn(NewPlayer);
+}
+
+APawn* ADroneOpsGameMode::SpawnDefaultPawnFor_Implementation(AController* NewPlayer, AActor* StartSpot)
+{
+	return nullptr;
 }
 
 void ADroneOpsGameMode::InitializeCoordinateService()
@@ -76,4 +84,51 @@ void ADroneOpsGameMode::InitializeDroneRegistry()
 	// Registry is ready for drone registration
 	// Drones will be registered by MultiDroneManager or individual actors
 	UE_LOG(LogTemp, Log, TEXT("DroneOpsGameMode: DroneRegistry ready for registration"));
+}
+
+APawn* ADroneOpsGameMode::FindUnpossessedPlacedPawn() const
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return nullptr;
+	}
+
+	for (TActorIterator<AMultiDroneCharacter> It(World); It; ++It)
+	{
+		AMultiDroneCharacter* DronePawn = *It;
+		if (!IsValid(DronePawn) || DronePawn->IsPendingKillPending())
+		{
+			continue;
+		}
+
+		if (DronePawn->Controller == nullptr)
+		{
+			return DronePawn;
+		}
+	}
+
+	return nullptr;
+}
+
+void ADroneOpsGameMode::PossessPlacedPawn(APlayerController* PlayerController)
+{
+	if (!PlayerController)
+	{
+		return;
+	}
+
+	if (PlayerController->GetPawn())
+	{
+		return;
+	}
+
+	if (APawn* ExistingPawn = FindUnpossessedPlacedPawn())
+	{
+		PlayerController->Possess(ExistingPawn);
+		UE_LOG(LogTemp, Log, TEXT("DroneOpsGameMode: Possessed placed pawn %s"), *ExistingPawn->GetName());
+		return;
+	}
+
+	UE_LOG(LogTemp, Warning, TEXT("DroneOpsGameMode: No unpossessed placed AMultiDroneCharacter found for %s"), *PlayerController->GetName());
 }

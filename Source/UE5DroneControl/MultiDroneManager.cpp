@@ -115,17 +115,11 @@ void AMultiDroneManager::RefreshDroneLists()
 	});
 
 	TArray<AActor*> SenderActors;
-	UGameplayStatics::GetAllActorsOfClass(GetWorld(), AUE5DroneControlCharacter::StaticClass(), SenderActors);
+	UGameplayStatics::GetAllActorsOfClass(GetWorld(), AMultiDroneCharacter::StaticClass(), SenderActors);
 	for (AActor* Actor : SenderActors)
 	{
-		AUE5DroneControlCharacter* Character = Cast<AUE5DroneControlCharacter>(Actor);
+		AMultiDroneCharacter* Character = Cast<AMultiDroneCharacter>(Actor);
 		if (!Character)
-		{
-			continue;
-		}
-
-		// Exclude RealTimeDroneReceiver instances from sender list.
-		if (Character->IsA(ARealTimeDroneReceiver::StaticClass()))
 		{
 			continue;
 		}

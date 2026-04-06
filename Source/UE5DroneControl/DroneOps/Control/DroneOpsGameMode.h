@@ -6,6 +6,9 @@
 #include "GameFramework/GameModeBase.h"
 #include "DroneOpsGameMode.generated.h"
 
+class APawn;
+class AController;
+
 /**
  * Game mode for drone operations
  * Initializes the drone registry and coordinate service
@@ -20,6 +23,8 @@ public:
 
 protected:
 	virtual void BeginPlay() override;
+	virtual void PostLogin(APlayerController* NewPlayer) override;
+	virtual APawn* SpawnDefaultPawnFor_Implementation(AController* NewPlayer, AActor* StartSpot) override;
 
 	// Initialize coordinate service (can be overridden in blueprints)
 	UFUNCTION(BlueprintCallable, Category = "DroneOps")
@@ -32,4 +37,8 @@ protected:
 	// Use Cesium coordinate service (false = SimpleCoordinateService)
 	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "DroneOps")
 	bool bUseCesiumCoordinates = false;
+
+private:
+	APawn* FindUnpossessedPlacedPawn() const;
+	void PossessPlacedPawn(APlayerController* PlayerController);
 };
